@@ -1,0 +1,503 @@
+---
+title: "Support Vector Machines Practical"
+author: "Njenga Gakwa"
+date: "2026-04-25"
+output: html_document
+---
+
+
+```{r}
+library(tidyverse)
+library(e1071)
+```
+
+## Interested in Knowing Factors that Lead to Diabetes especially in Adults over 40.
+### Step 1: Data Cleaning
+
+```{r}
+# Load the dataset using a relative path
+nhis_data <- read.csv("../Dataset/nhis_2022.csv")
+```
+
+Since not all columns are required, the dataset will be subset to only include variables needed.
+
+```{r}
+# Keep only the columns we need
+df <- nhis_data %>%
+  select(
+    ASTATFLG, DIABETICEV, AGE, SEX, MARSTCUR, EDUC, POVERTY,
+    HEIGHT, WEIGHT, BMICALC, HINOTCOVE,
+    CANCEREV, CHEARTDIEV, STROKEV, HEARTATTEV,
+    ALCANYNO, CIGDAYMO, MOD10DMIN, VIG10DMIN,
+    FRUTNO, VEGENO, SALADSNO, BEANNO, HRSLEEP, CVDSHT
+  )
+
+
+df <- df %>%
+  # Keep only adults (ASTATFLG == 1)
+  filter(ASTATFLG == 1) %>%
+
+  select(-ASTATFLG) %>%
+
+  # Handle the 996 not calculatable value for BMI
+  mutate(BMICALC = if_else(BMICALC >= 996, NA_real_, as.double(BMICALC))) %>%
+
+  # Scale the Body Mass Index (BMICALC) if not already done
+  mutate(BMICALC = if(max(BMICALC, na.rm = TRUE) > 100) BMICALC / 10 else as.double(BMICALC)) %>%
+
+  # Recode hours of sleep that is 25 to 0
+  mutate(HRSLEEP = if_else(HRSLEEP == 25, 0L, HRSLEEP)) %>%
+
+  # Replace all invalid values in the dataset with NA
+  mutate(
+    DIABETICEV = if_else(DIABETICEV %in% c(0, 7, 8, 9), NA_integer_, DIABETICEV),
+    AGE        = if_else(AGE %in% c(997, 998, 999), NA_integer_, AGE),
+    SEX        = if_else(SEX %in% c(7, 8, 9), NA_integer_, SEX),
+    MARSTCUR   = if_else(MARSTCUR %in% c(0, 9), NA_integer_, MARSTCUR),
+    EDUC       = if_else(EDUC %in% c(0, 996, 997, 998, 999), NA_integer_, EDUC),
+    POVERTY    = if_else(POVERTY %in% c(98, 99), NA_integer_, POVERTY),
+    HEIGHT     = if_else(HEIGHT %in% c(0, 95, 96, 97, 98, 99), NA_integer_, HEIGHT),
+    WEIGHT     = if_else(WEIGHT %in% c(0, 996, 997, 998, 999), NA_integer_, WEIGHT),
+    BMICALC    = if_else(BMICALC %in% c(0.0, 996.0), NA_real_, BMICALC),
+    HINOTCOVE  = if_else(HINOTCOVE %in% c(0, 7, 8, 9), NA_integer_, HINOTCOVE),
+    CANCEREV   = if_else(CANCEREV %in% c(0, 7, 8, 9), NA_integer_, CANCEREV),
+    CHEARTDIEV = if_else(CHEARTDIEV %in% c(0, 7, 8, 9), NA_integer_, CHEARTDIEV),
+    STROKEV    = if_else(STROKEV %in% c(0, 7, 8, 9), NA_integer_, STROKEV),
+    HEARTATTEV = if_else(HEARTATTEV %in% c(0, 7, 8, 9), NA_integer_, HEARTATTEV),
+    ALCANYNO   = if_else(ALCANYNO %in% c(996, 997, 998, 999), NA_integer_, ALCANYNO),
+    CIGDAYMO   = if_else(CIGDAYMO %in% c(96, 97, 98, 99), NA_integer_, CIGDAYMO),
+    MOD10DMIN  = if_else(MOD10DMIN %in% c(0, 996, 997, 998, 999), NA_integer_, MOD10DMIN),
+    VIG10DMIN  = if_else(VIG10DMIN %in% c(0, 996, 997, 998, 999), NA_integer_, VIG10DMIN),
+    FRUTNO     = if_else(FRUTNO %in% c(996, 997, 998, 999), NA_integer_, FRUTNO),
+    VEGENO     = if_else(VEGENO %in% c(996, 997, 998, 999), NA_integer_, VEGENO),
+    SALADSNO   = if_else(SALADSNO %in% c(996, 997, 998, 999), NA_integer_, SALADSNO),
+    BEANNO     = if_else(BEANNO %in% c(996, 997, 998, 999), NA_integer_, BEANNO),
+    HRSLEEP    = if_else(HRSLEEP %in% c(0, 97, 98, 99), NA_integer_, HRSLEEP),
+    CVDSHT     = if_else(CVDSHT %in% c(0, 7, 8, 9), NA_integer_, CVDSHT)
+  ) %>%
+
+  # Recode the target variable: 0 = Not Diabetic, 1 = Diabetic
+  mutate(DIABETICEV = case_when(
+    DIABETICEV == 1 ~ 0L,
+    DIABETICEV == 2 ~ 1L,
+    TRUE ~ NA_integer_
+  )) %>%
+
+  # Recode the stroke variable to binary
+  mutate(STROKEV = case_when(
+    STROKEV == 1 ~ 0L,
+    STROKEV == 2 ~ 1L,
+    TRUE ~ NA_integer_
+  )) %>%
+
+  # Drop instances where diabetes status is missing
+  filter(!is.na(DIABETICEV))
+```
+
+
+
+
+Create a plot to show the percentage of data missing 
+
+```{r}
+df_clean <- df %>%
+  select(-DIABETICEV) %>%
+  summarise(across(everything(), ~ mean(is.na(.)) * 100)) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Missing_pct") %>%
+  arrange(desc(Missing_pct)) %>%
+  print(n = Inf)
+```
+
+What this report shows is the percentage of missing information. This information is important as it helps with determining how the models to be deployed later will perform.
+
+**Observations**
+
+* `CIGDAYMO` at ~97.5% is normal as it's only asked of people who already smoke some days. Everyone else is NIU. This variable being "missing" actually means "doesn't apply / non-smoker", which is itself meaningful information.
+* `VIG10DMIN` and `MOD10DMIN` are also only asked of people who report doing that type of activity. Missing means they don't do vigorous/moderate exercise.
+* `ALCANYNO` implying that some adults didn't answer or were not asked.
+* `HEIGHT` and `WEIGHT` are self-reported, so some refusals are expected.
+* Everything from `EDUC` downward are essentially complete; no action needed.
+
+
+### Take Care of the Missing Values
+
+```{r}
+# Recode CIGDAYMO to binary. SMOKER is 0 for non-smoker, 1 for any days smoked
+df_model <- df %>%
+  mutate(
+    SMOKER = if_else(is.na(CIGDAYMO), 0L, 1L)
+  ) %>%
+  select(-CIGDAYMO) %>%
+
+  # Get rid of NA values in the exercise variables
+  mutate(
+    VIG10DMIN = if_else(is.na(VIG10DMIN), 0L, VIG10DMIN),
+    MOD10DMIN = if_else(is.na(MOD10DMIN), 0L, MOD10DMIN)
+  ) %>%
+
+  # Drop Height and Weight as they are captured in BMICALC
+  select(-HEIGHT, -WEIGHT) %>%
+
+  # Impute ALCANYNO with mean
+  mutate(ALCANYNO = if_else(is.na(ALCANYNO), mean(ALCANYNO, na.rm = TRUE), as.double(ALCANYNO)))
+```
+
+
+```{r}
+# Drop all remaining rows with NA values and subset to adults aged 40+
+# to focus on higher-risk group and reduce compute time
+df_final <- df_model %>%
+  drop_na() %>%
+  filter(AGE >= 40)
+
+
+# Save a new copy of the cleaned dataset 
+write_csv(df_final,
+          "C:/Users/njeng/OneDrive/Documents/GRAD SCHOOL CLASSES/DATA 5322 Statistical Machine Learning II/Support Vector Machines/Dataset/nhis_2022_cleaned.csv")
+```
+
+
+
+
+## Exploratory Data Analysis
+
+**Diabetes Distribution**
+```{r}
+df_final %>%
+  count(DIABETICEV) %>%
+  mutate(percent = n / sum(n) * 100)
+```
+
+This shows the class distribution. Only 13% of the adults in the dataset have diabetes.
+
+
+
+
+**AGE vs BMI**
+
+```{r}
+ggplot(df_final, aes(x = AGE, y = BMICALC, color = factor(DIABETICEV))) +
+  geom_point() +
+  labs(x = "Age", y = "BMI",
+       color = "Diabetes (0=No, 1=Yes)",
+       title = "Age vs BMI by Diabetes Status")
+
+```
+
+
+Older age combined with higher BMI clusters more strongly among diabetic cases, reflecting two well-established risk factors. The overlap between classes suggests a non-linear SVM kernel will be needed.
+
+
+**AGE vs HOURS OF SLEEP**
+```{r}
+ggplot(df_final, aes(x = AGE, y = HRSLEEP, color = factor(DIABETICEV))) +
+  geom_point() +
+  labs(x = "Age", y = "Hours of Sleep",
+       color = "Diabetes (0=No, 1=Yes)",
+       title = "Age vs Hours of Sleep by Diabetes Status")
+```
+
+Sleep duration is linked to metabolic health. This plot checks whether diabetic individuals cluster at extreme sleep durations relative to age.
+
+
+**BMI vs ALCOHOL USE**
+```{r}
+ggplot(df_final, aes(x = BMICALC, y = ALCANYNO, color = factor(DIABETICEV))) +
+  geom_point() +
+  labs(x = "BMI", y = "Alcohol Use (days)",
+       color = "Diabetes (0=No, 1=Yes)",
+       title = "BMI vs Alcohol Use by Diabetes Status")
+```
+
+
+**VIGOROUS ACTIVITY vs MODERATE ACTIVITY**
+```{r}
+ggplot(df_final, aes(x = VIG10DMIN, y = MOD10DMIN, color = factor(DIABETICEV))) +
+  geom_point() +
+  labs(x = "Vigorous Activity (min/day)", y = "Moderate Activity (min/day)",
+       color = "Diabetes (0=No, 1=Yes)",
+       title = "Physical Activity Pattern by Diabetes Status")
+```
+
+By keeping `VIG10DMIN` and `MOD10DMIN` as continuous minutes, this scatter reveals the activity volume gap between classes, invisible when these were collapsed to binary participation flags.
+
+---
+
+## MODELING
+
+The exploratory analysis above examines how diabetes status is associated with several key health and lifestyle variables including age, BMI, smoking behavior, physical activity, heart disease history, and stroke history.
+
+These relationships suggest that diabetes classification is a non-linear problem influenced by multiple interacting risk factors.
+
+Therefore, we proceed to build Support Vector Machine (SVM) models to classify diabetes occurrence using three different kernel types:
+
+* **Linear kernel** – assumes a linearly separable relationship
+* **Polynomial kernel** – captures interaction effects between variables
+* **Radial (RBF) kernel** – captures complex non-linear relationships
+
+The same feature set (predictors) will be used across all models to ensure fair comparison of kernel performance.
+
+
+
+```{r}
+# The data is imbalanced — roughly 86% non-diabetic vs 13% diabetic.
+# When we train on this as is, the model just predicts everyone as non-diabetic
+# and still gets ~85% accuracy. To actually learn the boundary between classes
+# we need to balance them out first.
+
+majority <- df_final %>% filter(DIABETICEV == 0)
+minority <- df_final %>% filter(DIABETICEV == 1)
+
+# Downsample the majority class to match how many diabetic cases we have
+set.seed(123)
+majority_downsampled <- majority %>% slice_sample(n = nrow(minority))
+
+# Combine back into one balanced dataset
+df_balanced <- bind_rows(majority_downsampled, minority)
+
+# Quick check — should be roughly 50/50 now
+table(df_balanced$DIABETICEV)
+```
+
+```{r}
+svm_data <- df_balanced %>%
+  select(
+    DIABETICEV, AGE, BMICALC, SMOKER,
+    VIG10DMIN, MOD10DMIN, CHEARTDIEV,
+    STROKEV
+  ) %>%
+  mutate(DIABETICEV = factor(DIABETICEV, levels = c(0, 1)))
+```
+
+
+## Linear Model
+
+**Train/Test Split**
+```{r}
+set.seed(123)
+
+n <- nrow(svm_data)
+train_index <- sample(1:n, size = 0.8 * n)
+
+train_data <- svm_data[train_index, ]
+test_data  <- svm_data[-train_index, ]
+```
+
+Using an 80/20 split.
+
+```{r}
+svm.diabetes.linear <- svm(
+  DIABETICEV ~ .,
+  data   = train_data,
+  kernel = "linear",
+  cost   = 0.01,
+  scale  = TRUE
+)
+
+summary(svm.diabetes.linear)
+```
+
+```{r}
+# Predictions
+pred_linear <- predict(svm.diabetes.linear, newdata = test_data)
+
+# Test error
+table(Actual = test_data$DIABETICEV, Predicted = pred_linear)
+mean(test_data$DIABETICEV != pred_linear)
+
+# Training predictions
+train.pred <- predict(svm.diabetes.linear, train_data)
+table(Actual = train_data$DIABETICEV, Predicted = train.pred)
+mean(train_data$DIABETICEV != train.pred)
+```
+
+The linear kernel achieved a test error of 34.8% (65.2% accuracy). On the test set, the model correctly identified 324 non-diabetic and 282 diabetic cases, but misclassified 145 non-diabetic individuals as diabetic and 179 diabetic individuals as non-diabetic.
+
+
+**Linear Model Tuning**
+```{r}
+set.seed(123)
+
+svm_linear_tuned <- tune.svm(
+  DIABETICEV ~ .,
+  data   = train_data,
+  kernel = "linear",
+  cost   = c(0.001, 0.01, 0.1, 1, 10),
+  scale  = TRUE
+)
+
+summary(svm_linear_tuned)
+```
+
+```{r}
+# Best model
+best_linear_model <- svm_linear_tuned$best.model
+summary(best_linear_model)
+
+# Train error
+train.pred.linear <- predict(best_linear_model, train_data)
+table(Actual = train_data$DIABETICEV, Predicted = train.pred.linear)
+mean(train_data$DIABETICEV != train.pred.linear)
+
+# Test error
+test.pred.linear <- predict(best_linear_model, test_data)
+table(Actual = test_data$DIABETICEV, Predicted = test.pred.linear)
+mean(test_data$DIABETICEV != test.pred.linear)
+```
+
+The best linear model used cost C = 0.01, favoring a wider margin, and relied on 2,837 support vectors nearly split between both classes, indicating substantial overlap between diabetic and non-diabetic cases in feature space. Training error was 32.8% and test error was 34.8%, with 282 diabetic and 324 non-diabetic cases correctly identified on the test set. The 179 missed diabetic cases are the more concerning error in a health context. Performance being nearly identical across all three kernels suggests the predictors themselves are the limiting factor, not the boundary shape.
+
+
+
+## Radial Kernel SVM
+
+```{r}
+set.seed(123)
+
+# DIABETICEV, AGE, BMICALC, SMOKER,VIG10DMIN, MOD10DMIN, CHEARTDIEV, STROKEV
+
+svm_radial_tuned <- tune.svm(
+  DIABETICEV ~  AGE + BMICALC + SMOKER + VIG10DMIN + 
+    MOD10DMIN + CHEARTDIEV + STROKEV,
+  data   = train_data,
+  kernel = "radial",
+  gamma  = c(0.0001, 0.001, 0.01, 0.1),
+  cost   = c(1, 10, 100, 1000),
+  scale  = TRUE,
+  tunecontrol = tune.control(cross = 3)
+)
+
+summary(svm_radial_tuned)
+```
+
+**Best Radial Model**
+```{r}
+best_radial_model <- svm_radial_tuned$best.model
+summary(best_radial_model)
+
+# Training error
+train.pred.radial <- predict(best_radial_model, train_data)
+table(Actual = train_data$DIABETICEV, Predicted = train.pred.radial)
+mean(train_data$DIABETICEV != train.pred.radial)
+
+# Test error
+test.pred.radial <- predict(best_radial_model, test_data)
+table(Actual = test_data$DIABETICEV, Predicted = test.pred.radial)
+mean(test_data$DIABETICEV != test.pred.radial)
+```
+
+The best radial model used cost C = 1,000 and relied on 2,678 support vectors, again nearly split between both classes, confirming the classes overlap heavily regardless of kernel. Training error was 31.5% and test error was 33.3%, making it the best performing of the three kernels. On the test set it correctly identified 312 non-diabetic and 308 diabetic cases, with 157 non-diabetic individuals misclassified as diabetic and 153 diabetic cases missed. The high cost value suggests the model needed to fit the training data tightly to find any meaningful separation, which is consistent with the non-linear and overlapping class structure visible in the Age vs BMI scatter plots.
+
+
+
+## Polynomial Kernel
+
+```{r}
+set.seed(123)
+
+svm_poly_tuned <- tune.svm(
+  DIABETICEV ~ AGE + BMICALC + SMOKER + VIG10DMIN + 
+    MOD10DMIN + CHEARTDIEV + STROKEV,
+  data   = train_data,
+  kernel = "polynomial",
+
+  # Tuning degree + cost
+  degree = c(2, 3, 4),
+  cost   = c(0.1, 1, 10, 100),
+
+  scale  = TRUE,
+  tunecontrol = tune.control(cross = 3)
+)
+
+summary(svm_poly_tuned)
+```
+
+```{r}
+# Best performing model
+best_poly_model <- svm_poly_tuned$best.model
+summary(best_poly_model)
+```
+
+```{r}
+# Training predictions
+train.pred.poly <- predict(best_poly_model, train_data)
+table(Actual = train_data$DIABETICEV, Predicted = train.pred.poly)
+mean(train_data$DIABETICEV != train.pred.poly)
+
+# Test predictions
+test.pred.poly <- predict(best_poly_model, test_data)
+table(Actual = test_data$DIABETICEV, Predicted = test.pred.poly)
+mean(test_data$DIABETICEV != test.pred.poly)
+```
+
+The best polynomial model used cost C = 100 with degree 3, and relied on 2,730 support vectors nearly split between both classes, consistent with the heavy class overlap seen across all three kernels. Training error was 31.7% and test error was 34.9%, making it the weakest performer of the three despite using a more flexible boundary than the linear kernel. On the test set it correctly identified 325 non-diabetic and 280 diabetic cases, with 144 non-diabetic individuals misclassified as diabetic and 181 diabetic cases missed. The degree 3 polynomial captures interaction effects between predictors, but the marginal difference from the linear kernel (65.1% vs 65.2%) suggests these interactions add little predictive power given the available variables.
+
+
+## Decision Boundary Plots
+
+```{r}
+# Radial: AGE vs BMI
+plot(best_radial_model, train_data, BMICALC ~ AGE,
+     main = "Radial Kernel: Age vs BMI",
+     color.palette = topo.colors)
+
+# Linear: AGE vs BMI
+plot(best_linear_model, train_data, BMICALC ~ AGE,
+     main = "Linear Kernel: Age vs BMI",
+     color.palette = topo.colors)
+
+# Polynomial: AGE vs BMI
+plot(best_poly_model, train_data, BMICALC ~ AGE,
+     main = "Polynomial Kernel: Age vs BMI",
+     color.palette = topo.colors)
+```
+
+
+All three kernels produce a similar diagonal boundary where higher BMI combined with older age predicts diabetes (cyan, 1), while lower BMI regardless of age tends to predict non-diabetic (purple, 0). The key difference between them is the shape of that boundary. The radial kernel produces the most jagged and irregular boundary, aggressively following the data. The linear kernel draws the cleanest and most consistent cut, sloping gradually downward from left to right. The polynomial kernel falls in between, slightly more curved than linear but less erratic than radial. Despite these visual differences, the three kernels end up with very similar test errors, suggesting the boundary shape matters less than the predictor information available.
+
+
+
+
+
+## Model Comparison Summary
+
+
+The comparison chart provides a clear side-by-side view of how each kernel performs on held-out data after tuning. A non-linear kernel (RBF or polynomial) is expected to outperform the linear kernel given the overlapping class structure visible in the scatter plots.
+
+
+
+```{r}
+# Collect test error rates across all three best-tuned models
+results <- tibble(
+  Kernel     = c("Linear", "Radial (RBF)", "Polynomial"),
+  Test_Error = c(
+    mean(test_data$DIABETICEV != test.pred.linear),
+    mean(test_data$DIABETICEV != test.pred.radial),
+    mean(test_data$DIABETICEV != test.pred.poly)
+  ),
+  Accuracy   = 1 - Test_Error
+)
+
+
+ggplot(results, aes(x = Kernel, y = Accuracy, fill = Kernel)) +
+  geom_col(width = 0.5, show.legend = FALSE) +
+  geom_text(aes(label = scales::percent(Accuracy, accuracy = 0.1)),
+            vjust = -0.4, size = 5, fontface = "bold") +
+  scale_fill_manual(values = c(
+    "Linear"       = "#4A90D9",
+    "Radial (RBF)" = "#2C7A4B",
+    "Polynomial"   = "#8B5CF6"
+  )) +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  labs(title = "SVM Kernel Comparison on Test Set Accuracy",
+       x = "Kernel", y = "Accuracy") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title       = element_text(face = "bold", hjust = 0.5, size = 16),
+    axis.text        = element_text(size = 12),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
+
+
