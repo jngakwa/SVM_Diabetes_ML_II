@@ -459,6 +459,7 @@ All three kernels produce a similar diagonal boundary where higher BMI combined 
 
 
 
+
 ## Model Comparison Summary
 
 
@@ -500,4 +501,26 @@ ggplot(results, aes(x = Kernel, y = Accuracy, fill = Kernel)) +
   )
 ```
 
+### Sensitivity for each kernel i.e of all actual diabetics, how many did we catch?
+```{r}
 
+# Linear
+tbl_linear <- table(Actual = test_data$DIABETICEV, Predicted = test.pred.linear)
+sensitivity_linear <- tbl_linear["1", "1"] / (tbl_linear["1", "1"] + tbl_linear["1", "0"])
+
+round(sensitivity_linear, 3)
+
+# Radial
+tbl_radial <- table(Actual = test_data$DIABETICEV, Predicted = test.pred.radial)
+sensitivity_radial <- tbl_radial["1", "1"] / (tbl_radial["1", "1"] + tbl_radial["1", "0"])
+
+round(sensitivity_radial, 3)
+
+# Polynomial
+tbl_poly <- table(Actual = test_data$DIABETICEV, Predicted = test.pred.poly)
+sensitivity_poly <- tbl_poly["1", "1"] / (tbl_poly["1", "1"] + tbl_poly["1", "0"])
+
+round(sensitivity_poly, 3)
+```
+
+While overall accuracy was similar across kernels, the radial kernel achieved the highest sensitivity 0.668, correctly identifying 66.8% of diabetic cases compared to 61.2% for linear and 60.7% for polynomial. In a clinical screening context, sensitivity is the most critical metric a missed diabetic case carries far greater consequences than a false alarm. This further supports the radial kernel as the preferred model.
